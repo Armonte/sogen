@@ -6,7 +6,7 @@ rem   SOGEN_SWALLOW_DB is deliberately NOT set -- it suppresses single-steps The
 set "SteamAppId=4835540"
 set "SOGEN_CHILD_EMULATOR=1"
 set "SOGEN_DUMPER_SHIM=1"
-set "SOGEN_QVM_DEBUG=1"
+set "SOGEN_NO_THEIA_HOOKS=1"
 set "SOGEN_TF_DEBUG=1"
 set "SOGEN_POKE_MAILBOX=6"
 cd /d "C:\dev\tokon\tools\sogen\build\release\artifacts"

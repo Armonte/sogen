@@ -1,4 +1,6 @@
 #include "../std_include.hpp"
+
+#include <fstream>
 #include "../syscall_dispatcher.hpp"
 #include "../cpu_context.hpp"
 #include "../emulator_utils.hpp"

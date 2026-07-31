@@ -1,5 +1,7 @@
 #include "std_include.hpp"
 
+#include <fstream>
+
 #include <set>
 #include "windows_emulator.hpp"
 
@@ -919,6 +921,57 @@ namespace sogen
                 this->log.print(color::green, "[CHILDPROC] child exited with 0x%X\n",
                                 static_cast<uint32_t>(*child->process.exit_status));
             }
+
+            // SOGEN_CAPTURE_PAGES=<file> -- write the parent's executable image out once the child
+            // has finished.
+            //
+            // Theia decrypts a page on demand and re-encrypts it later, so plaintext exists only
+            // while a page is in use, and this is the moment the most of it has been touched: the
+            // dumper has just finished driving the parent, and the child returned rather than
+            // failing.
+            //
+            // An earlier attempt tee'd the dumper's own reads instead, on the assumption it read the
+            // parent across the process boundary. It does not -- every NtReadVirtualMemory arrives
+            // with h=0xFFFFFFFFFFFFFFFF and cur=1, so the child only ever reads itself, and the
+            // decrypted game image is only ever in the parent's address space. The comment in
+            // handle_NtReadVirtualMemory already said the reads do not use the parent handle.
+            if (const auto* out_path = getenv("SOGEN_CAPTURE_PAGES"))
+            {
+                const auto* exe = this->mod_manager.executable;
+                if (exe)
+                {
+                    constexpr uint64_t page_size = 0x1000;
+                    std::ofstream out(out_path, std::ios::binary | std::ios::out | std::ios::trunc);
+
+                    size_t readable = 0;
+                    size_t non_zero = 0;
+                    std::array<uint8_t, page_size> page{};
+
+                    for (uint64_t off = 0; off + page_size <= exe->size_of_image; off += page_size)
+                    {
+                        if (!this->memory.try_read_memory(exe->image_base + off, page.data(), page.size()))
+                        {
+                            continue;
+                        }
+
+                        ++readable;
+                        if (std::ranges::any_of(page, [](const uint8_t b) { return b != 0; }))
+                        {
+                            ++non_zero;
+                        }
+
+                        out.seekp(static_cast<std::streamoff>(off));
+                        out.write(reinterpret_cast<const char*>(page.data()), static_cast<std::streamsize>(page.size()));
+                    }
+
+                    out.flush();
+                    this->log.print(color::pink,
+                                    "[CAPTURE] wrote %zu readable pages (%zu non-zero) of %s, base 0x%" PRIx64
+                                    " size 0x%" PRIx64 " -> %s\n",
+                                    readable, non_zero, exe->name.c_str(), exe->image_base,
+                                    static_cast<uint64_t>(exe->size_of_image), out_path);
+                }
+            }
         }
 
         return ran;
@@ -1524,6 +1577,34 @@ namespace sogen
                                                 this->emu().reg<uint64_t>(x86_register::rdi),
                                                 this->emu().reg<uint64_t>(x86_register::r8),
                                                 this->emu().reg<uint64_t>(x86_register::r9));
+
+                                // At many sites the ciphertext pointer is not in a GPR when the rol
+                                // executes -- 018E1924 carries the correct key in rcx while its other
+                                // registers hold stack addresses -- so also report any stack qword in
+                                // this module's range. That is what limited the first run to 3
+                                // recovered strings out of 23 sites that fired.
+                                const auto rsp = this->emu().reg<uint64_t>(x86_register::rsp);
+                                const auto* self = this->mod_manager.find_by_address(
+                                    this->emu().reg<uint64_t>(x86_register::rip));
+                                if (!self)
+                                {
+                                    return;
+                                }
+
+                                for (uint64_t off = 0; off < 0x200; off += 8)
+                                {
+                                    uint64_t v = 0;
+                                    if (!this->memory.try_read_memory(rsp + off, &v, sizeof(v)))
+                                    {
+                                        break;
+                                    }
+
+                                    if (v > self->image_base && v < self->image_base + self->size_of_image)
+                                    {
+                                        this->log.print(color::pink, "[STRPTR] +0x%" PRIx64 " sp+0x%03" PRIx64 "=0x%" PRIx64 "\n",
+                                                        rva, off, v);
+                                    }
+                                }
                             });
                     }
                 }
