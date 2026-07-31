@@ -47,8 +47,7 @@ namespace sogen
             if (semaphore_handle.value.type != handle_types::semaphore)
             {
                 c.win_emu.log.error("Bad handle type for NtReleaseSemaphore\n");
-                c.emu.stop();
-                return STATUS_NOT_SUPPORTED;
+                return STATUS_OBJECT_TYPE_MISMATCH;
             }
 
             auto* mutant = c.proc.semaphores.get(semaphore_handle);

@@ -1490,6 +1490,21 @@ namespace sogen
             return message;
         }
 
+        hicon handle_NtUserInternalGetWindowIcon(const syscall_context&, const hwnd, const UINT)
+        {
+            return {};
+        }
+
+        int handle_NtUserInternalGetWindowText(const syscall_context& c, const hwnd, const emulator_pointer text, const int max_chars)
+        {
+            if (text && max_chars > 0)
+            {
+                c.emu.write_memory<char16_t>(text, 0);
+            }
+
+            return 0;
+        }
+
         uint64_t handle_NtUserGetThreadState(const syscall_context& c, const ULONG routine)
         {
             if (routine == k_thread_state_message_time)

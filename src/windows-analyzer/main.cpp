@@ -63,6 +63,7 @@ namespace sogen
             std::optional<uint64_t> break_call{};
             std::filesystem::path dump{};
             std::filesystem::path minidump_path{};
+            bool minidump_resume{false};
             std::filesystem::path report_path{};
             std::filesystem::path stdout_path{};
             std::string report_format{"jsonl"};
@@ -389,7 +390,7 @@ namespace sogen
                     win_x86_64_gdb_stub_handler handler{win_emu, should_stop};
                     gdb_stub::run_gdb_stub(address, handler);
                 }
-                else if (!options.minidump_path.empty())
+                else if (!options.minidump_path.empty() && !options.minidump_resume)
                 {
                     // For minidumps, don't start execution automatically; just report ready state
                     win_emu.log.print(color::green, "Minidump loaded successfully. Process state ready for analysis.\n");
@@ -912,6 +913,7 @@ namespace sogen
             app.add_option("-e,--emulation", options.emulation_root, "Set emulation root path");
             app.add_option("-a,--snapshot", options.dump, "Load snapshot dump from path");
             app.add_option("--minidump", options.minidump_path, "Load minidump from path");
+            app.add_flag("--minidump-resume", options.minidump_resume, "Resume execution from the minidump's thread context");
             app.add_option("--report", options.report_path, "Write machine-readable analysis events to a file");
             app.add_option("--report-format", options.report_format, "Report format (supported: jsonl)")->capture_default_str();
             app.add_option("--stdout", options.stdout_path, "Write guest console output to a file");

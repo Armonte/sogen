@@ -66,7 +66,11 @@ namespace sogen
         {
             if (!win_path.is_absolute())
             {
-                throw std::runtime_error("Only absolute paths can be translated: " + win_path.string());
+                // Quote the path and say whether it is empty: a minidump-loaded emulator hits this
+                // with something that prints as nothing at all, and "empty" versus "relative but
+                // unprintable" are different bugs.
+                throw std::runtime_error("Only absolute paths can be translated: '" + win_path.string() +
+                                         "' (empty=" + (win_path.string().empty() ? "yes" : "no") + ")");
             }
 
             // Exact file mapping (fast path).

@@ -209,6 +209,13 @@ namespace sogen
 
         std::unique_ptr<x86_64_emulator> emu_{};
         std::unique_ptr<utils::clock> clock_{};
+
+        // The host clock counts real time spent emulating, which is orders of magnitude more than the
+        // guest's code would take natively, so any guest that measures an interval with RDTSC sees an
+        // implausible delta. SOGEN_TSC_STEP replaces it with a counter advancing a fixed amount per
+        // read, which reads as fast native execution.
+        uint64_t virtual_tsc_{};
+        uint64_t read_timestamp_counter();
         std::unique_ptr<network::dns_lookup> dns_lookup_{};
         std::unique_ptr<network::socket_factory> socket_factory_{};
         std::unique_ptr<ui_backend> ui_backend_{};
@@ -513,6 +520,14 @@ namespace sogen
         }
 
         void setup_process_if_necessary();
+
+        // A process restored wholesale -- from a minidump, say -- already has its modules, memory and
+        // threads. Running setup over it would remap main modules from an application path that such an
+        // emulator does not have, so it must be told the process is already constructed.
+        void mark_process_already_constructed()
+        {
+            this->setup_completed_ = true;
+        }
 
         void start(size_t count = 0);
         void stop();

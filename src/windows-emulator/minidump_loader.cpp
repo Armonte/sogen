@@ -4,6 +4,7 @@
 #include "windows_emulator.hpp"
 #include "windows_objects.hpp"
 #include "emulator_thread.hpp"
+#include "cpu_context.hpp"
 #include "memory_utils.hpp"
 
 #include <platform/platform.hpp>
@@ -378,16 +379,29 @@ namespace sogen
                 return name.find(".exe") != std::string::npos;
             }
 
+            // module_name is a full path in a minidump, so system modules can only be recognised by
+            // their basename.
+            std::string module_basename(const minidump::module_info& mod)
+            {
+                auto name = mod.module_name;
+                const auto separator = name.find_last_of("\\/");
+                if (separator != std::string::npos)
+                {
+                    name = name.substr(separator + 1);
+                }
+
+                std::ranges::transform(name, name.begin(), [](const unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                return name;
+            }
+
             bool is_ntdll(const minidump::module_info& mod)
             {
-                const auto name = mod.module_name;
-                return name == "ntdll.dll" || name == "NTDLL.DLL";
+                return module_basename(mod) == "ntdll.dll";
             }
 
             bool is_win32u(const minidump::module_info& mod)
             {
-                const auto name = mod.module_name;
-                return name == "win32u.dll" || name == "WIN32U.DLL";
+                return module_basename(mod) == "win32u.dll";
             }
 
             void reconstruct_module_state(windows_emulator& win_emu, const minidump::minidump_file* dump_file)
@@ -517,6 +531,8 @@ namespace sogen
                 size_t success_count = 0;
                 size_t context_loaded_count = 0;
 
+                auto& cpu = win_emu.vcpu(0).cpu;
+
                 for (const auto& thread_info : threads)
                 {
                     try
@@ -526,12 +542,34 @@ namespace sogen
                         thread.stack_base = thread_info.stack_start_of_memory_range;
                         thread.stack_size = thread_info.stack_data_size;
 
-                        // Load CPU context if available
-                        const bool context_loaded = load_thread_context(minidump_path, thread_info, thread.last_registers);
+                        std::vector<std::byte> raw_context{};
+                        const bool context_loaded = load_thread_context(minidump_path, thread_info, raw_context) &&
+                                                    raw_context.size() >= sizeof(CONTEXT64);
+
+                        // last_registers is a backend-native snapshot (an array of WHV_REGISTER_VALUE, a uc_context,
+                        // ...), not a Windows CONTEXT, so the dump's context cannot be stored into it directly: every
+                        // backend rejects it on size. Route it through the CPU to obtain the backend's own encoding.
                         if (context_loaded)
                         {
+                            CONTEXT64 context{};
+                            std::memcpy(&context, raw_context.data(), sizeof(context));
+                            cpu_context::restore(cpu, context);
                             context_loaded_count++;
                         }
+
+                        // A Windows CONTEXT carries segment selectors but no bases, and cpu_context::restore
+                        // writes the GS selector, so the base has to be re-asserted afterwards or every
+                        // gs:[...] access reads from linear address 0.
+                        if (thread_info.teb != 0)
+                        {
+                            cpu.set_segment_base(x86_register::gs, thread_info.teb);
+                        }
+
+                        thread.save(cpu);
+
+                        // A reconstructed thread is resumed mid-execution, so setup_registers() must not run for it:
+                        // it would overwrite the restored context with a fresh thread's entry state.
+                        thread.setup_done = true;
 
                         // Set TEB address if valid
                         if (thread_info.teb != 0)
@@ -558,6 +596,12 @@ namespace sogen
                 {
                     auto& first_thread = win_emu.process.threads.begin()->second;
                     win_emu.vcpu(0).active_thread = &first_thread;
+
+                    // The loop above left the CPU holding the last thread's context.
+                    first_thread.restore(cpu);
+
+                    win_emu.log.info("Resuming thread %u at 0x%" PRIx64 " (rsp 0x%" PRIx64 ")\n", first_thread.id,
+                                     cpu.reg<uint64_t>(x86_register::rip), cpu.reg<uint64_t>(x86_register::rsp));
                 }
 
                 win_emu.log.info("Thread reconstruction: %zu/%zu threads created, %zu with context\n", success_count, threads.size(),
@@ -600,6 +644,35 @@ namespace sogen
                 {
                     win_emu.log.error("Failed to read PEB from TEB: %s\n", e.what());
                 }
+            }
+
+            // Skipping ordinary process setup also skips the only place the syscall table is built, so
+            // without this every `syscall` reports an unknown id and returns STATUS_INVALID_SYSTEM_SERVICE.
+            void setup_syscall_dispatcher(windows_emulator& win_emu)
+            {
+                const auto* ntdll = win_emu.mod_manager.ntdll;
+                const auto* win32u = win_emu.mod_manager.win32u;
+
+                if (!ntdll)
+                {
+                    win_emu.log.warn("No ntdll in the dump; syscalls cannot be dispatched\n");
+                    return;
+                }
+
+                const auto& emu = win_emu.emu();
+                const auto ntdll_data = emu.read_memory(ntdll->image_base, static_cast<size_t>(ntdll->size_of_image));
+
+                if (win32u)
+                {
+                    const auto win32u_data = emu.read_memory(win32u->image_base, static_cast<size_t>(win32u->size_of_image));
+                    win_emu.dispatcher.setup(ntdll->exports, ntdll_data, win32u->exports, win32u_data);
+                }
+                else
+                {
+                    win_emu.dispatcher.setup(ntdll->exports, ntdll_data, {}, {});
+                }
+
+                win_emu.log.info("Syscall dispatcher ready (win32u %s)\n", win32u ? "present" : "absent");
             }
 
             void reconstruct_handle_table(windows_emulator& win_emu, const minidump::minidump_file* dump_file)
@@ -704,11 +777,21 @@ namespace sogen
                 reconstruct_memory_state(win_emu, dump_file.get(), dump_reader.get());
                 reconstruct_module_state(win_emu, dump_file.get());
 
+                // Must precede thread reconstruction: restoring a thread points GDTR at this GDT.
+                win_emu.process.setup_emulator_scaffolding(win_emu);
+
                 // Process state reconstruction phases
                 setup_peb_from_teb(win_emu, dump_file.get());
                 reconstruct_threads(win_emu, dump_file.get(), minidump_path);
                 reconstruct_handle_table(win_emu, dump_file.get());
                 setup_exception_context(win_emu, dump_file.get());
+
+                setup_syscall_dispatcher(win_emu);
+
+                // The dump supplied the modules, memory and threads, so ordinary process setup must
+                // not run afterwards: it would remap main modules from an application path that a
+                // minidump-loaded emulator does not have, and translate() rejects the empty path.
+                win_emu.mark_process_already_constructed();
 
                 win_emu.log.info("Process state reconstruction completed\n");
             }

@@ -275,6 +275,13 @@ namespace sogen
 
             emulator_thread& cur_emulator_thread = c.thread();
 
+            // A thread caught mid-creation or mid-teardown has no TEB, and a minidump can contain one.
+            // Every class below that reads through teb64 would otherwise dereference an empty optional.
+            if (!thread->teb64 && (info_class == ThreadTebInformation || info_class == ThreadBasicInformation))
+            {
+                return STATUS_INVALID_HANDLE;
+            }
+
             if (info_class == ThreadWow64Context)
             {
                 // ThreadWow64Context is only valid for WOW64 processes
@@ -1168,6 +1175,19 @@ namespace sogen
             if (previous_suspend_count)
             {
                 previous_suspend_count.write(old_count);
+            }
+
+            // Resuming a process from a minidump starts every thread mid-flight, so a thread suspended
+            // here may be holding a lock that another resumed thread is already spinning on, which no
+            // amount of scheduling can break.
+            static const bool ignore_suspend = [] {
+                const auto* value = getenv("SOGEN_IGNORE_SUSPEND");
+                return value && *value == '1';
+            }();
+
+            if (ignore_suspend)
+            {
+                return STATUS_SUCCESS;
             }
 
             if (thread->suspended >= 0x7F) // MAXIMUM_SUSPEND_COUNT

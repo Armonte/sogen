@@ -249,6 +249,12 @@ namespace sogen
         }
     }
 
+    void process_context::setup_emulator_scaffolding(windows_emulator& win_emu)
+    {
+        setup_gdt(win_emu.emu(), win_emu.memory);
+        this->base_allocator = create_allocator(win_emu.memory, PEB_SEGMENT_SIZE, this->is_wow64_process);
+    }
+
     void process_context::setup(windows_emulator& win_emu, const application_settings& app_settings, const mapped_module& executable,
                                 const mapped_module& ntdll, const apiset::container& apiset_container, const mapped_module* ntdll32)
     {

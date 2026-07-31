@@ -383,6 +383,11 @@ namespace sogen
         void setup(windows_emulator& win_emu, const application_settings& app_settings, const mapped_module& executable,
                    const mapped_module& ntdll, const apiset::container& apiset_container, const mapped_module* ntdll32 = nullptr);
 
+        // A process reconstructed from a minidump already carries its own PEB, parameters and modules,
+        // so setup() must not run for it. It still needs the emulator-side scaffolding that setup()
+        // would otherwise have created.
+        void setup_emulator_scaffolding(windows_emulator& win_emu);
+
         static emulator_pointer allocate_user_class(memory_manager& memory, std::u16string_view class_name);
 
         handle create_thread(memory_manager& memory, uint64_t start_address, uint64_t argument, uint64_t stack_size, uint32_t create_flags,

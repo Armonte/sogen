@@ -1084,6 +1084,27 @@ namespace sogen
         this->setup_process();
     }
 
+    uint64_t windows_emulator::read_timestamp_counter()
+    {
+        static const uint64_t step = [] {
+            const auto* value = getenv("SOGEN_TSC_STEP");
+            return value ? strtoull(value, nullptr, 0) : 0ull;
+        }();
+
+        if (step == 0)
+        {
+            return this->clock_->timestamp_counter();
+        }
+
+        if (this->virtual_tsc_ == 0)
+        {
+            this->virtual_tsc_ = this->clock_->timestamp_counter();
+        }
+
+        this->virtual_tsc_ += step;
+        return this->virtual_tsc_;
+    }
+
     void windows_emulator::setup_process()
     {
         const auto& emu = this->emu();
@@ -1965,7 +1986,7 @@ namespace sogen
             auto& acting = vcpu.cpu;
             this->callbacks.on_rdtscp();
 
-            const auto ticks = this->clock_->timestamp_counter();
+            const auto ticks = this->read_timestamp_counter();
             acting.reg(x86_register::rax, static_cast<uint32_t>(ticks));
             acting.reg(x86_register::rdx, static_cast<uint32_t>(ticks >> 32));
 
@@ -1983,7 +2004,7 @@ namespace sogen
             auto& acting = vcpu.cpu;
             this->callbacks.on_rdtsc();
 
-            const auto ticks = this->clock_->timestamp_counter();
+            const auto ticks = this->read_timestamp_counter();
             acting.reg(x86_register::rax, static_cast<uint32_t>(ticks));
             acting.reg(x86_register::rdx, static_cast<uint32_t>(ticks >> 32));
 
@@ -2119,9 +2140,14 @@ namespace sogen
             if (acting.reg<uint16_t>(x86_register::cs) == 0x33)
             {
                 // loading gs selector only works in 64-bit mode
-                const auto required_gs_base = vcpu.thread().gs_segment->get_base();
+                // A thread reconstructed from a minidump owns no GS allocation; its TEB is already
+                // resident in the dump's memory, so that address is the base.
+                const auto& acting_thread = vcpu.thread();
+                const auto required_gs_base = acting_thread.gs_segment ? acting_thread.gs_segment->get_base()
+                                              : acting_thread.teb64    ? acting_thread.teb64->value()
+                                                                       : 0;
                 const auto actual_gs_base = acting.get_segment_base(x86_register::gs);
-                if (actual_gs_base != required_gs_base)
+                if (required_gs_base != 0 && actual_gs_base != required_gs_base)
                 {
                     acting.set_segment_base(x86_register::gs, required_gs_base);
                     return memory_violation_continuation::restart;
