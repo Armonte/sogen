@@ -655,6 +655,87 @@ namespace sogen
 
                         win_emu.log.info("[PROBE] parked %zu other threads\n", parked);
                     }
+
+                    // Theia's decrypt chain never services the fault when it arrives through the
+                    // normal dispatcher, so call its L4 thunk the way xivy does natively: hand it a
+                    // hand-built EXCEPTION_POINTERS describing an execute fault on the target page.
+                    static const auto l4_probe = [] {
+                        const auto* value = getenv("SOGEN_L4_PROBE");
+                        return value ? strtoull(value, nullptr, 16) : 0ull;
+                    }();
+
+                    if (l4_probe != 0)
+                    {
+                        // runtime.dll is mapped more than once. The handler has to be the copy that
+                        // owns the page being faulted, or it is asked about memory it knows nothing of.
+                        const mapped_module* runtime = win_emu.mod_manager.find_by_address(l4_probe);
+                        if (runtime && runtime->name != "runtime.dll")
+                        {
+                            runtime = nullptr;
+                        }
+
+                        if (!runtime)
+                        {
+                            for (const auto& entry : win_emu.mod_manager.modules() | std::views::values)
+                            {
+                                if (entry.name == "runtime.dll")
+                                {
+                                    runtime = &entry;
+                                    break;
+                                }
+                            }
+                        }
+
+                        if (!runtime)
+                        {
+                            win_emu.log.warn("[L4] runtime.dll not among the reconstructed modules\n");
+                        }
+                        else
+                        {
+                            constexpr uint64_t l4_thunk_rva = 0x910800;
+                            const auto handler = runtime->image_base + l4_thunk_rva;
+
+                            const auto scratch = (cpu.reg<uint64_t>(x86_register::rsp) - 0x8000) & ~0xFFFull;
+                            const auto record_address = scratch;
+                            const auto context_address = scratch + 0x400;
+                            const auto pointers_address = scratch + 0x1000;
+
+                            EMU_EXCEPTION_RECORD<EmulatorTraits<Emu64>> record{};
+                            record.ExceptionCode = STATUS_ACCESS_VIOLATION;
+                            record.ExceptionAddress = l4_probe;
+                            record.NumberParameters = 2;
+                            record.ExceptionInformation[0] = 8; // execute
+                            record.ExceptionInformation[1] = l4_probe;
+
+                            CONTEXT64 context{};
+                            context.ContextFlags = CONTEXT64_ALL;
+                            cpu_context::save(cpu, context);
+                            context.Rip = l4_probe;
+
+                            EMU_EXCEPTION_POINTERS<EmulatorTraits<Emu64>> pointers{};
+                            pointers.ExceptionRecord = record_address;
+                            pointers.ContextRecord = context_address;
+
+                            win_emu.memory.write_memory(record_address, &record, sizeof(record));
+                            win_emu.memory.write_memory(context_address, &context, sizeof(context));
+                            win_emu.memory.write_memory(pointers_address, &pointers, sizeof(pointers));
+
+                            // Unmapped on purpose: returning from the handler faults here, which is an
+                            // unmistakable marker that it ran to completion.
+                            constexpr uint64_t return_marker = 0xDEAD1000;
+                            const auto sp = (scratch - 0x400) & ~0xFull;
+                            win_emu.memory.write_memory(sp, &return_marker, sizeof(return_marker));
+
+                            cpu.reg(x86_register::rsp, sp);
+                            cpu.reg(x86_register::rcx, pointers_address);
+                            cpu.reg(x86_register::rip, handler);
+                            first_thread.save(cpu);
+
+                            win_emu.log.info("[L4] calling 0x%" PRIx64 " (runtime+0x%" PRIx64 ") for page 0x%" PRIx64
+                                             ", pointers at 0x%" PRIx64 "\n",
+                                             handler, l4_thunk_rva, l4_probe, pointers_address);
+                        }
+                    }
                 }
 
                 win_emu.log.info("Thread reconstruction: %zu/%zu threads created, %zu with context\n", success_count, threads.size(),

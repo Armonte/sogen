@@ -1880,6 +1880,24 @@ namespace sogen
                     });
                     this->log.info("[THEIAKEY] armed %s at 0x%" PRIx64 "\n", s.what, addr);
                 }
+
+                // Positive control for the hook mechanism itself. The tripwire above only serves as
+                // one if its code runs, and in a resumed minidump it does not -- the 0xFFF syscall
+                // never appears -- so "the cipher hook never fired" cannot otherwise be told apart
+                // from "execution hooks do not work on this path". Point this at an RVA observed
+                // executing in the run being diagnosed.
+                if (const auto* test_rva = getenv("SOGEN_THEIAKEY_TEST_RVA"))
+                {
+                    const auto addr = mod.image_base + strtoull(test_rva, nullptr, 16);
+                    this->emu().hook_memory_execution(addr, [this, addr](cpu_interface&, const uint64_t) {
+                        static int fired = 0;
+                        if (fired++ < 3)
+                        {
+                            this->log.info("[THEIAKEY] TEST hook fired at 0x%" PRIx64 "\n", addr);
+                        }
+                    });
+                    this->log.info("[THEIAKEY] armed TEST at 0x%" PRIx64 "\n", addr);
+                }
             }
 
             // ---- Theia clean-DLL hook-sweep diagnostic -------------------------------
