@@ -670,6 +670,34 @@ namespace sogen
 
         NTSTATUS handle_NtYieldExecution(const syscall_context& c)
         {
+            // The fault probe parks every other thread so that it is the one that runs, but once
+            // Theia's handler chain is under way it yields waiting on a worker that parking made
+            // unschedulable. The first yield is the signal that the chain is running, so release
+            // them here.
+            static const bool release_on_yield = [] {
+                const auto* value = getenv("SOGEN_PROBE_PARK");
+                return value && *value == '1';
+            }();
+
+            if (release_on_yield)
+            {
+                static bool released = false;
+                if (!released)
+                {
+                    released = true;
+                    size_t count = 0;
+                    for (auto& entry : c.proc.threads | std::views::values)
+                    {
+                        if (entry.suspended > 0)
+                        {
+                            entry.suspended = 0;
+                            ++count;
+                        }
+                    }
+                    c.win_emu.log.info("[PROBE] released %zu threads on first yield\n", count);
+                }
+            }
+
             // A child yields because it is waiting on its parent -- and the parent is stopped
             // for as long as this slice runs. End the slice immediately so the parent gets to
             // run and answer; the parent's own yield resumes this child right where it left

@@ -602,6 +602,59 @@ namespace sogen
 
                     win_emu.log.info("Resuming thread %u at 0x%" PRIx64 " (rsp 0x%" PRIx64 ")\n", first_thread.id,
                                      cpu.reg<uint64_t>(x86_register::rip), cpu.reg<uint64_t>(x86_register::rsp));
+
+                    // A dump of a running process still holds Theia's undecrypted pages exactly as it
+                    // left them, marked inaccessible. Jumping into one raises the fault its handler
+                    // chain services, which is the only way to reach the cipher without driving the
+                    // whole game to a container read.
+                    static const auto probe = [] {
+                        const auto* value = getenv("SOGEN_FAULT_PROBE");
+                        return value ? strtoull(value, nullptr, 16) : 0ull;
+                    }();
+
+                    if (probe != 0)
+                    {
+                        uint8_t byte{};
+                        const auto readable = win_emu.memory.try_read_memory(probe, &byte, 1);
+
+                        // The dumper captured these pages readable even though they still hold
+                        // ciphertext, so the fault Theia's handler expects has to be created here
+                        // rather than waited for.
+                        const auto page = probe & ~0xFFFull;
+                        const auto protected_ok =
+                            win_emu.memory.protect_memory(page, 0x1000, nt_memory_permission{memory_permission::none}, nullptr);
+
+                        win_emu.log.info("[PROBE] rip -> 0x%" PRIx64 " (was %s, protect %s)\n", probe,
+                                         readable ? "readable" : "inaccessible", protected_ok ? "ok" : "FAILED");
+                        cpu.reg(x86_register::rip, probe);
+
+                        // The scheduler restores each thread from its own snapshot on the first switch,
+                        // so writing the CPU alone would be undone before a single instruction runs.
+                        first_thread.save(cpu);
+
+                        // Parking the other threads guarantees the probe is what runs, but Theia's
+                        // fault handler then spins on NtYieldExecution waiting for a worker that can
+                        // never be scheduled, so it is opt-in.
+                        static const bool park_others = [] {
+                            const auto* value = getenv("SOGEN_PROBE_PARK");
+                            return value && *value == '1';
+                        }();
+
+                        size_t parked = 0;
+                        if (park_others)
+                        {
+                            for (auto& entry : win_emu.process.threads | std::views::values)
+                            {
+                                if (&entry != &first_thread)
+                                {
+                                    entry.suspended = 1;
+                                    ++parked;
+                                }
+                            }
+                        }
+
+                        win_emu.log.info("[PROBE] parked %zu other threads\n", parked);
+                    }
                 }
 
                 win_emu.log.info("Thread reconstruction: %zu/%zu threads created, %zu with context\n", success_count, threads.size(),

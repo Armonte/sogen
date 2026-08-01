@@ -253,6 +253,23 @@ namespace sogen
     {
         setup_gdt(win_emu.emu(), win_emu.memory);
         this->base_allocator = create_allocator(win_emu.memory, PEB_SEGMENT_SIZE, this->is_wow64_process);
+
+        // Without these the emulator has nowhere to transfer control to. An exception in particular
+        // dispatches to ki_user_exception_dispatcher, so leaving it zero sends the guest to address 0
+        // the moment anything faults.
+        const auto* ntdll = win_emu.mod_manager.ntdll;
+        if (!ntdll)
+        {
+            return;
+        }
+
+        this->ntdll_image_base = ntdll->image_base;
+        this->ldr_initialize_thunk = ntdll->find_export("LdrInitializeThunk");
+        this->rtl_user_thread_start = ntdll->find_export("RtlUserThreadStart");
+        this->ki_user_apc_dispatcher = ntdll->find_export("KiUserApcDispatcher");
+        this->ki_user_exception_dispatcher = ntdll->find_export("KiUserExceptionDispatcher");
+        this->ki_user_callback_dispatcher = ntdll->find_export("KiUserCallbackDispatcher");
+        this->zw_callback_return = ntdll->find_export("ZwCallbackReturn");
     }
 
     void process_context::setup(windows_emulator& win_emu, const application_settings& app_settings, const mapped_module& executable,
