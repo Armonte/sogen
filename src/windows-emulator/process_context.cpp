@@ -270,6 +270,10 @@ namespace sogen
         this->ki_user_exception_dispatcher = ntdll->find_export("KiUserExceptionDispatcher");
         this->ki_user_callback_dispatcher = ntdll->find_export("KiUserCallbackDispatcher");
         this->zw_callback_return = ntdll->find_export("ZwCallbackReturn");
+
+        win_emu.log.info("Reconstructed dispatchers: KiUserExceptionDispatcher=0x%" PRIx64
+                         " KiUserApcDispatcher=0x%" PRIx64 "\n",
+                         this->ki_user_exception_dispatcher, this->ki_user_apc_dispatcher);
     }
 
     void process_context::setup(windows_emulator& win_emu, const application_settings& app_settings, const mapped_module& executable,

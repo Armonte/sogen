@@ -112,6 +112,11 @@ namespace sogen
 
             const auto allocation_size = combined_size + mach_frame_size;
 
+            if (dispatcher == 0)
+            {
+                throw std::runtime_error("No exception dispatcher: the guest would be sent to address 0");
+            }
+
             const auto initial_sp = emu.reg(x86_register::rsp);
             const auto new_sp = align_down(initial_sp - allocation_size, 0x100);
 
